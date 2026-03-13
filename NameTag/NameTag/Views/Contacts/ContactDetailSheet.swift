@@ -6,11 +6,8 @@ struct ContactDetailSheet: View {
     let connection: Connection
 
     @State private var howDoIKnow: String
-    @State private var isSaving = false
     @State private var savedSuccessfully = false
     @State private var showingDeleteConfirmation = false
-    @State private var isDeleting = false
-    @State private var isTogglingPause = false
 
     init(connection: Connection) {
         self.connection = connection
@@ -23,7 +20,7 @@ struct ContactDetailSheet: View {
 
     /// Get the live connection from the service so isPaused updates in real time
     private var liveConnection: Connection {
-        appState.connectionsService.connections.first { $0.userId == connection.userId } ?? connection
+        appState.localContactsService.connections.first { $0.userId == connection.userId } ?? connection
     }
 
     var body: some View {
@@ -31,7 +28,7 @@ struct ContactDetailSheet: View {
             ScrollView {
                 VStack(spacing: 24) {
                     // Profile photo
-                    AsyncProfileImage(url: connection.profilePhotoURL)
+                    AsyncProfileImage(photoFileName: connection.photoFileName)
                         .frame(width: 100, height: 100)
                         .clipShape(Circle())
                         .overlay(Circle().stroke(.separator, lineWidth: 1))
@@ -68,19 +65,13 @@ struct ContactDetailSheet: View {
                     // Save button (only shown when there are changes)
                     if hasChanges {
                         Button {
-                            Task { await save() }
+                            save()
                         } label: {
-                            if isSaving {
-                                ProgressView()
-                                    .frame(maxWidth: .infinity)
-                            } else {
-                                Text("Save")
-                                    .frame(maxWidth: .infinity)
-                            }
+                            Text("Save")
+                                .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
-                        .disabled(isSaving)
                         .padding(.horizontal)
                     }
 
@@ -94,7 +85,7 @@ struct ContactDetailSheet: View {
                     NavigationLink {
                         ConversationView(
                             connection: connection,
-                            currentUID: appState.authService.currentUID ?? ""
+                            currentUID: appState.identityService.currentUID
                         )
                     } label: {
                         Label("Send Message", systemImage: "bubble.right")
@@ -109,12 +100,9 @@ struct ContactDetailSheet: View {
 
                     // Disconnect / Reconnect button
                     Button {
-                        Task { await togglePause() }
+                        togglePause()
                     } label: {
-                        if isTogglingPause {
-                            ProgressView()
-                                .frame(maxWidth: .infinity)
-                        } else if liveConnection.proximityPaused {
+                        if liveConnection.proximityPaused {
                             Label("Reconnect Proximity", systemImage: "wifi")
                                 .frame(maxWidth: .infinity)
                         } else {
@@ -125,24 +113,17 @@ struct ContactDetailSheet: View {
                     .buttonStyle(.bordered)
                     .controlSize(.large)
                     .tint(liveConnection.proximityPaused ? .green : .orange)
-                    .disabled(isTogglingPause)
                     .padding(.horizontal)
 
                     // Delete Contact button
                     Button(role: .destructive) {
                         showingDeleteConfirmation = true
                     } label: {
-                        if isDeleting {
-                            ProgressView()
-                                .frame(maxWidth: .infinity)
-                        } else {
-                            Label("Delete Contact", systemImage: "person.badge.minus")
-                                .frame(maxWidth: .infinity)
-                        }
+                        Label("Delete Contact", systemImage: "person.badge.minus")
+                            .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
-                    .disabled(isDeleting)
                     .padding(.horizontal)
                     .padding(.bottom, 32)
                 }
@@ -157,7 +138,7 @@ struct ContactDetailSheet: View {
             }
             .alert("Delete Contact", isPresented: $showingDeleteConfirmation) {
                 Button("Delete", role: .destructive) {
-                    Task { await deleteContact() }
+                    deleteContact()
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -166,67 +147,34 @@ struct ContactDetailSheet: View {
         }
     }
 
-    private func save() async {
-        guard let myUID = appState.authService.currentUID else { return }
-
-        isSaving = true
+    private func save() {
         savedSuccessfully = false
-
         do {
-            try await appState.connectionsService.updateHowDoIKnow(
-                myUID: myUID,
-                connectionUID: connection.userId,
+            try appState.localContactsService.updateHowDoIKnow(
+                uid: connection.userId,
                 howDoIKnow: howDoIKnow.trimmingCharacters(in: .whitespacesAndNewlines)
             )
             savedSuccessfully = true
         } catch {
             print("[ContactDetailSheet] save failed: \(error.localizedDescription)")
         }
-
-        isSaving = false
     }
 
-    private func togglePause() async {
-        guard let myUID = appState.authService.currentUID else { return }
-
-        isTogglingPause = true
-
+    private func togglePause() {
         do {
-            let newPaused = !liveConnection.proximityPaused
-            try await appState.connectionsService.togglePause(
-                myUID: myUID,
-                connectionUID: connection.userId,
-                paused: newPaused
-            )
+            try appState.localContactsService.togglePause(uid: connection.userId)
         } catch {
             print("[ContactDetailSheet] togglePause failed: \(error.localizedDescription)")
         }
-
-        isTogglingPause = false
     }
 
-    private func deleteContact() async {
-        guard let myUID = appState.authService.currentUID else { return }
-
-        isDeleting = true
-
+    private func deleteContact() {
         do {
-            // Delete the conversation and all messages
-            try await appState.messagingService.deleteConversation(
-                myUID: myUID,
-                otherUID: connection.userId
-            )
-
-            // Remove the connection (both sides)
-            try await appState.connectionsService.removeConnection(
-                myUID: myUID,
-                connectionUID: connection.userId
-            )
-
+            try appState.localMessagingService.deleteConversation(otherUID: connection.userId)
+            try appState.localContactsService.removeContact(uid: connection.userId)
             dismiss()
         } catch {
             print("[ContactDetailSheet] deleteContact failed: \(error.localizedDescription)")
-            isDeleting = false
         }
     }
 }

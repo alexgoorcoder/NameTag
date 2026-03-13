@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreBluetooth
 
 struct CardStackView: View {
     @Environment(AppState.self) private var appState
@@ -24,6 +25,22 @@ struct CardStackView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 4) {
+                // Bluetooth off warning
+                if appState.bleService.bluetoothState != .poweredOn {
+                    HStack(spacing: 8) {
+                        Image(systemName: "antenna.radiowaves.left.and.right.slash")
+                        Text("Bluetooth is off. Turn it on to detect nearby contacts.")
+                            .font(.caption)
+                    }
+                    .foregroundStyle(.white)
+                    .padding(10)
+                    .frame(maxWidth: .infinity)
+                    .background(.orange)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .padding(.horizontal, 16)
+                    .padding(.top, 4)
+                }
+
                 // Title area
                 VStack(spacing: 2) {
                     Text("Nearby")
@@ -53,7 +70,7 @@ struct CardStackView: View {
             .navigationDestination(item: $selectedConnection) { connection in
                 ConversationView(
                     connection: connection,
-                    currentUID: appState.authService.currentUID ?? ""
+                    currentUID: appState.identityService.currentUID
                 )
             }
             .onAppear { viewModel.startMonitoring(appState: appState) }
@@ -76,7 +93,6 @@ struct CardStackView: View {
                 get: { appState.notificationGatekeeper.suppressionDuration },
                 set: {
                     appState.notificationGatekeeper.suppressionDuration = $0
-                    // Immediately update all nearby contacts' suppression entries
                     appState.recheckNearbyNotifications()
                 }
             )) {

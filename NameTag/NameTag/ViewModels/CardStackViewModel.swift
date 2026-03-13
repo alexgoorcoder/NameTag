@@ -18,51 +18,26 @@ final class CardStackViewModel {
     }
 
     private func refreshNearbyContacts(appState: AppState) {
-        let connectionUIDs = appState.connectionsService.connectionUIDs
+        let connectionUIDs = appState.localContactsService.connectionUIDs
 
-        // Update all services with latest connection UIDs
+        // Update BLE service with latest connection UIDs
         appState.bleService.updateConnectionUIDs(connectionUIDs)
-        appState.multipeerService.updateConnectionUIDs(connectionUIDs)
-        appState.bonjourService.updateConnectionUIDs(connectionUIDs)
-        appState.locationService.updateConnectionUIDs(connectionUIDs)
 
-        // Collect nearbyUserIDs from all 4 proximity sources
-        let sources: [[String: (lastSeen: Date, rssi: Int)]] = [
-            appState.bleService.nearbyUserIDs,
-            appState.multipeerService.nearbyUserIDs,
-            appState.bonjourService.nearbyUserIDs,
-            appState.locationService.nearbyUserIDs
-        ]
+        // BLE is the only proximity source
+        let nearby = appState.bleService.nearbyUserIDs
+            .filter { connectionUIDs.contains($0.key) }
 
-        // Merge: union of UIDs, most recent lastSeen, highest rssi
-        var merged: [String: (lastSeen: Date, rssi: Int)] = [:]
-        for source in sources {
-            for (uid, info) in source {
-                if let existing = merged[uid] {
-                    merged[uid] = (
-                        lastSeen: max(existing.lastSeen, info.lastSeen),
-                        rssi: max(existing.rssi, info.rssi)
-                    )
-                } else {
-                    merged[uid] = info
-                }
-            }
-        }
-
-        // Filter merged to only include active (non-paused) connection UIDs
-        merged = merged.filter { connectionUIDs.contains($0.key) }
-
-        let connections = appState.connectionsService.connections.filter { !$0.proximityPaused }
+        let connections = appState.localContactsService.connections.filter { !$0.proximityPaused }
 
         // Build NearbyContact for each detected connection
         var result: [NearbyContact] = []
         for connection in connections {
-            if let mergedInfo = merged[connection.userId] {
+            if let info = nearby[connection.userId] {
                 result.append(NearbyContact(
                     id: connection.userId,
                     connection: connection,
-                    lastSeenAt: mergedInfo.lastSeen,
-                    rssi: mergedInfo.rssi
+                    lastSeenAt: info.lastSeen,
+                    rssi: info.rssi
                 ))
             }
         }

@@ -1,28 +1,22 @@
 import Foundation
 import UIKit
 import AVFoundation
-import FirebaseAuth
 
 @Observable
 final class ProfileViewModel {
     var firstName = ""
     var lastName = ""
-    var isHiddenFromSearch = false
-    var emailSearchable = true
-    var phoneSearchable = true
     var selectedImage: UIImage?
     var isEditing = false
-    var isLoading = false
     var errorMessage: String?
     var successMessage: String?
     var showingPhotoOptions = false
     var showingCamera = false
     var showingCameraDeniedAlert = false
+    var showingResetConfirmation = false
 
-    // Account deletion state
-    var showingDeleteConfirmation = false
-    var isDeleting = false
-    var deleteError: String?
+    private var originalFirstName = ""
+    private var originalLastName = ""
 
     var isNameValid: Bool {
         !firstName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
@@ -30,9 +24,8 @@ final class ProfileViewModel {
     }
 
     var hasNameChanges: Bool {
-        guard let user = originalUser else { return false }
-        return firstName.trimmingCharacters(in: .whitespacesAndNewlines) != user.firstName ||
-               lastName.trimmingCharacters(in: .whitespacesAndNewlines) != user.lastName
+        firstName.trimmingCharacters(in: .whitespacesAndNewlines) != originalFirstName ||
+        lastName.trimmingCharacters(in: .whitespacesAndNewlines) != originalLastName
     }
 
     var hasPhotoChange: Bool {
@@ -43,21 +36,17 @@ final class ProfileViewModel {
         hasNameChanges || hasPhotoChange
     }
 
-    private var originalUser: AppUser?
-
-    func loadUser(from appState: AppState) {
-        guard let user = appState.userService.currentAppUser else { return }
-        originalUser = user
-        firstName = user.firstName
-        lastName = user.lastName
-        isHiddenFromSearch = user.isHiddenFromSearch
-        emailSearchable = user.emailSearchable
-        phoneSearchable = user.phoneSearchable
+    func loadProfile(from appState: AppState) {
+        guard let profile = appState.localUserService.currentProfile else { return }
+        firstName = profile.firstName
+        lastName = profile.lastName
+        originalFirstName = profile.firstName
+        originalLastName = profile.lastName
         selectedImage = nil
     }
 
     func startEditing(from appState: AppState) {
-        loadUser(from: appState)
+        loadProfile(from: appState)
         isEditing = true
         errorMessage = nil
         successMessage = nil
@@ -86,75 +75,19 @@ final class ProfileViewModel {
     }
 
     func cancelEditing() {
-        if let user = originalUser {
-            firstName = user.firstName
-            lastName = user.lastName
-        }
+        firstName = originalFirstName
+        lastName = originalLastName
         selectedImage = nil
         isEditing = false
         errorMessage = nil
     }
 
-    func toggleHiddenFromSearch(using appState: AppState) async {
-        guard let uid = appState.authService.currentUID else { return }
-        let newValue = isHiddenFromSearch
-        do {
-            try await appState.userService.updateHiddenFromSearch(uid: uid, isHidden: newValue)
-        } catch {
-            // Revert on failure
-            isHiddenFromSearch = !newValue
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    func updateSearchablePreference(field: String, using appState: AppState) async {
-        guard let uid = appState.authService.currentUID else { return }
-        let emailVal = emailSearchable
-        let phoneVal = phoneSearchable
-        do {
-            try await appState.userService.updateSearchablePreferences(
-                uid: uid,
-                emailSearchable: emailVal,
-                phoneSearchable: phoneVal
-            )
-        } catch {
-            // Revert on failure
-            if field == "email" { emailSearchable = !emailVal }
-            if field == "phone" { phoneSearchable = !phoneVal }
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    func deleteAccount(using appState: AppState) async {
-        isDeleting = true
-        deleteError = nil
-
-        do {
-            try await appState.deleteAccount()
-        } catch {
-            let nsError = error as NSError
-            if nsError.domain == AuthErrorDomain,
-               nsError.code == AuthErrorCode.requiresRecentLogin.rawValue {
-                deleteError = "For security, please sign out and sign back in, then try again."
-            } else {
-                deleteError = error.localizedDescription
-            }
-            isDeleting = false
-        }
-    }
-
-    func save(using appState: AppState) async {
-        guard let uid = appState.authService.currentUID else {
-            errorMessage = "Not signed in."
-            return
-        }
-
+    func save(using appState: AppState) {
         guard isNameValid else {
             errorMessage = "First and last name are required."
             return
         }
 
-        isLoading = true
         errorMessage = nil
         successMessage = nil
 
@@ -164,39 +97,28 @@ final class ProfileViewModel {
 
             // Update name if changed
             if hasNameChanges {
-                try await appState.userService.updateProfile(
-                    uid: uid,
+                try appState.localUserService.updateProfile(
                     firstName: trimmedFirst,
                     lastName: trimmedLast
                 )
             }
 
-            // Upload new photo if selected
+            // Save new photo if selected
             if let image = selectedImage {
-                let url = try await appState.storageService.uploadProfilePhoto(uid: uid, image: image)
-                try await appState.userService.updateProfilePhotoURL(uid: uid, url: url)
+                let uid = appState.identityService.currentUID
+                let filename = try appState.photoStorageService.savePhoto(uid: uid, image: image)
+                try appState.localUserService.updatePhotoFileName(filename)
             }
 
             selectedImage = nil
             isEditing = false
             successMessage = "Profile updated!"
 
-            // Refresh the original user reference
-            originalUser = appState.userService.currentAppUser
-
-            // Propagate profile changes to all connections so other users see updated tiles
-            if let user = appState.userService.currentAppUser {
-                await appState.connectionsService.updateProfileInConnections(
-                    myUID: uid,
-                    firstName: user.firstName,
-                    lastName: user.lastName,
-                    profilePhotoURL: user.profilePhotoURL
-                )
-            }
+            // Refresh original values
+            originalFirstName = trimmedFirst
+            originalLastName = trimmedLast
         } catch {
             errorMessage = error.localizedDescription
         }
-
-        isLoading = false
     }
 }

@@ -1,27 +1,23 @@
 import SwiftUI
 
 struct AsyncProfileImage: View {
-    let url: String?
+    let photoFileName: String?
 
     var body: some View {
-        if let urlString = url, let imageURL = URL(string: urlString) {
-            AsyncImage(url: imageURL) { phase in
-                switch phase {
-                case .success(let image):
-                    image
-                        .resizable()
-                        .scaledToFill()
-                case .failure:
-                    placeholder
-                case .empty:
-                    ProgressView()
-                @unknown default:
-                    placeholder
-                }
-            }
+        if let filename = photoFileName, let image = loadImage(filename: filename) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
         } else {
             placeholder
         }
+    }
+
+    private func loadImage(filename: String) -> UIImage? {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let url = docs.appendingPathComponent("photos").appendingPathComponent(filename)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return UIImage(data: data)
     }
 
     private var placeholder: some View {
