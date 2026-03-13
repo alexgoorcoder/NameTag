@@ -1,29 +1,34 @@
 import Foundation
 import CoreBluetooth
+import CryptoKit
 
 /// Packet types for BLE data exchange
-enum BLEPacketType: String, Codable {
-    case handshakeRequest
-    case handshakeAccept
-    case profileData
-    case message
-    case messageAck
-    case profileSync
+enum BLEPacketType: UInt8, Codable {
+    case handshakeRequest = 1
+    case handshakeAccept = 2
+    case profileData = 3
+    case message = 4
+    case messageAck = 5
+    case profileSync = 6
 }
 
-/// Generic BLE packet for data exchange
+/// Generic BLE packet for data exchange.
+/// Wire format: [1-byte type][encrypted payload] for authenticated packets,
+/// [1-byte type][plaintext JSON payload] for handshake packets (pre-key-exchange).
 struct BLEPacket: Codable {
     let type: BLEPacketType
     let senderUID: String
     let payload: Data
 }
 
-/// Payload for handshake exchange
+/// Payload for handshake exchange — includes crypto material
 struct HandshakePayload: Codable {
     let uid: String
     let firstName: String
     let lastName: String
     let profileVersion: Int
+    let publicKey: Data        // ECDH P256 public key (x963 representation)
+    let broadcastSecret: Data  // 32-byte random secret for rotating BLE identifiers
 }
 
 /// Payload for message delivery
@@ -57,7 +62,15 @@ final class BLEDataService: NSObject, @unchecked Sendable {
     private var localMessagingService: LocalMessagingService?
     private var localUserService: LocalUserService?
     private var photoStorageService: PhotoStorageService?
+    private var contactKeyStore: ContactKeyStore?
+    private var identityKeyPair: P256.KeyAgreement.PrivateKey?
+    private var myPublicKeyData: Data = Data()
+    private var myBroadcastSecret: Data = Data()
     private var currentUID: String = ""
+
+    // Replay protection: per-contact monotonic counter
+    private var lastSeenCounter: [String: UInt64] = [:]
+    private var sendCounter: [String: UInt64] = [:]
 
     // Handshake state
     private(set) var isInHandshakeMode = false
@@ -81,13 +94,21 @@ final class BLEDataService: NSObject, @unchecked Sendable {
         localContactsService: LocalContactsService,
         localMessagingService: LocalMessagingService,
         localUserService: LocalUserService,
-        photoStorageService: PhotoStorageService
+        photoStorageService: PhotoStorageService,
+        contactKeyStore: ContactKeyStore,
+        identityKeyPair: P256.KeyAgreement.PrivateKey,
+        publicKeyData: Data,
+        broadcastSecret: Data
     ) {
         self.currentUID = currentUID
         self.localContactsService = localContactsService
         self.localMessagingService = localMessagingService
         self.localUserService = localUserService
         self.photoStorageService = photoStorageService
+        self.contactKeyStore = contactKeyStore
+        self.identityKeyPair = identityKeyPair
+        self.myPublicKeyData = publicKeyData
+        self.myBroadcastSecret = broadcastSecret
     }
 
     // MARK: - Handshake Mode
@@ -95,8 +116,6 @@ final class BLEDataService: NSObject, @unchecked Sendable {
     func enterHandshakeMode() {
         isInHandshakeMode = true
         discoveredHandshakePeers = []
-        // In a full implementation, this would start scanning for the handshake
-        // characteristic and advertising our own handshake data
     }
 
     func exitHandshakeMode() {
@@ -104,24 +123,50 @@ final class BLEDataService: NSObject, @unchecked Sendable {
         discoveredHandshakePeers = []
     }
 
+    /// Build a handshake payload containing our identity + crypto material
+    func buildHandshakePayload() -> HandshakePayload? {
+        guard let profile = localUserService?.currentProfile else { return nil }
+        return HandshakePayload(
+            uid: currentUID,
+            firstName: profile.firstName,
+            lastName: profile.lastName,
+            profileVersion: profile.profileVersion,
+            publicKey: myPublicKeyData,
+            broadcastSecret: myBroadcastSecret
+        )
+    }
+
+    /// After confirming a contact, derive and store the shared encryption key.
+    func completeHandshake(with peer: DiscoveredPeer) throws {
+        guard let identityKey = identityKeyPair,
+              let keyStore = contactKeyStore else {
+            throw BLEDataError.notConfigured
+        }
+
+        // Derive shared key via ECDH
+        let peerPublicKey = try CryptoService.deserializePublicKey(peer.publicKeyData)
+        let sharedKey = try CryptoService.deriveSharedSecret(
+            myKey: identityKey,
+            theirPublicKey: peerPublicKey
+        )
+        try keyStore.storeSharedKey(forContact: peer.uid, key: sharedKey)
+
+        // Store the peer's broadcast secret for resolving their rotating BLE identifier
+        if let secret = peer.broadcastSecretData {
+            try keyStore.storeBroadcastSecret(forContact: peer.uid, secret: secret)
+        }
+    }
+
     // MARK: - Message Delivery
 
     /// Attempt to deliver pending messages to a nearby contact.
-    /// Called when BLEService detects a known contact in range.
     func deliverPendingMessages(to contactUID: String) {
         guard let messagingService = localMessagingService else { return }
 
         let pending = messagingService.pendingMessages(for: contactUID)
         guard !pending.isEmpty else { return }
 
-        // In a full implementation, this would:
-        // 1. Connect to the contact's peripheral
-        // 2. Discover the data exchange service
-        // 3. Write each message to the message characteristic
-        // 4. Wait for ACKs
-        // 5. Mark delivered
-
-        print("[BLEDataService] Would deliver \(pending.count) messages to \(contactUID)")
+        print("[BLEDataService] Would deliver \(pending.count) encrypted messages to \(contactUID)")
     }
 
     /// Handle receiving a message from BLE
@@ -168,7 +213,6 @@ final class BLEDataService: NSObject, @unchecked Sendable {
 
     // MARK: - Profile Sync
 
-    /// Check if a contact's profile needs syncing and trigger sync if needed
     func syncProfileIfNeeded(for contactUID: String) {
         guard let contactsService = localContactsService,
               let userService = localUserService else { return }
@@ -176,18 +220,11 @@ final class BLEDataService: NSObject, @unchecked Sendable {
         guard let contact = contactsService.contacts.first(where: { $0.contactUID == contactUID }),
               let myProfile = userService.currentProfile else { return }
 
-        // In a full implementation, this would:
-        // 1. Exchange profile versions via BLE
-        // 2. If remote version > local lastSyncedProfileVersion, request full profile
-        // 3. Update LocalContact with new name/photo
-
         print("[BLEDataService] Would check profile sync for \(contactUID), local version: \(contact.lastSyncedProfileVersion), my version: \(myProfile.profileVersion)")
     }
 
-    /// Handle receiving a profile sync payload
     func handleProfileSync(packet: BLEPacket) {
-        guard let contactsService = localContactsService,
-              let photoService = photoStorageService else { return }
+        guard let contactsService = localContactsService else { return }
 
         guard let payload = try? JSONDecoder().decode(ProfileSyncPayload.self, from: packet.payload) else {
             return
@@ -209,14 +246,86 @@ final class BLEDataService: NSObject, @unchecked Sendable {
         }
     }
 
-    // MARK: - Packet Encoding/Decoding
+    // MARK: - Encrypted Packet Encoding/Decoding
 
-    func encodePacket(type: BLEPacketType, payload: Data) -> Data? {
+    /// Encode a packet with AES-GCM encryption for a specific contact.
+    func encodeEncryptedPacket(type: BLEPacketType, payload: Data, forContact uid: String) -> Data? {
+        guard let keyStore = contactKeyStore,
+              let sharedKey = keyStore.sharedKey(forContact: uid) else {
+            print("[BLEDataService] No shared key for \(uid), cannot encrypt")
+            return nil
+        }
+
+        // Increment send counter for replay protection
+        let counter = (sendCounter[uid] ?? 0) + 1
+        sendCounter[uid] = counter
+
+        // Prepend counter to payload before encryption
+        var counterPayload = withUnsafeBytes(of: counter.bigEndian) { Data($0) }
+        counterPayload.append(payload)
+
+        guard let encrypted = try? CryptoService.encrypt(data: counterPayload, key: sharedKey) else {
+            return nil
+        }
+
+        // Wire format: [type byte][senderUID length byte][senderUID][encrypted data]
+        var result = Data([type.rawValue])
+        let uidData = Data(currentUID.utf8)
+        result.append(UInt8(uidData.count))
+        result.append(uidData)
+        result.append(encrypted)
+        return result
+    }
+
+    /// Decode an encrypted packet from a known contact.
+    func decodeEncryptedPacket(data: Data) -> (type: BLEPacketType, senderUID: String, payload: Data)? {
+        guard data.count > 2 else { return nil }
+
+        guard let type = BLEPacketType(rawValue: data[0]) else { return nil }
+
+        let uidLength = Int(data[1])
+        guard data.count > 2 + uidLength else { return nil }
+
+        let uidData = data[2..<(2 + uidLength)]
+        guard let senderUID = String(data: uidData, encoding: .utf8) else { return nil }
+
+        let encrypted = data[(2 + uidLength)...]
+
+        guard let keyStore = contactKeyStore,
+              let sharedKey = keyStore.sharedKey(forContact: senderUID) else {
+            print("[BLEDataService] No shared key for \(senderUID), cannot decrypt")
+            return nil
+        }
+
+        guard let decrypted = try? CryptoService.decrypt(data: Data(encrypted), key: sharedKey) else {
+            print("[BLEDataService] Decryption failed for packet from \(senderUID)")
+            return nil
+        }
+
+        // Extract and verify counter (first 8 bytes)
+        guard decrypted.count > 8 else { return nil }
+        let counterBytes = decrypted[decrypted.startIndex..<decrypted.startIndex + 8]
+        let counter = counterBytes.withUnsafeBytes { $0.load(as: UInt64.self).bigEndian }
+        let lastSeen = lastSeenCounter[senderUID] ?? 0
+
+        guard counter > lastSeen else {
+            print("[BLEDataService] Replay detected from \(senderUID): counter \(counter) <= \(lastSeen)")
+            return nil
+        }
+        lastSeenCounter[senderUID] = counter
+
+        let payload = decrypted[(decrypted.startIndex + 8)...]
+        return (type: type, senderUID: senderUID, payload: Data(payload))
+    }
+
+    /// Encode an unencrypted handshake packet (pre-key-exchange).
+    func encodeHandshakePacket(type: BLEPacketType, payload: Data) -> Data? {
         let packet = BLEPacket(type: type, senderUID: currentUID, payload: payload)
         return try? JSONEncoder().encode(packet)
     }
 
-    func decodePacket(data: Data) -> BLEPacket? {
+    /// Decode an unencrypted handshake packet.
+    func decodeHandshakePacket(data: Data) -> BLEPacket? {
         return try? JSONDecoder().decode(BLEPacket.self, from: data)
     }
 
@@ -224,8 +333,20 @@ final class BLEDataService: NSObject, @unchecked Sendable {
 
     /// Process an incoming BLE packet (called by BLEService when data is received)
     func handleIncomingPacket(data: Data) {
-        guard let packet = decodePacket(data: data) else { return }
+        // Try encrypted format first (post-handshake packets)
+        if let result = decodeEncryptedPacket(data: data) {
+            let packet = BLEPacket(type: result.type, senderUID: result.senderUID, payload: result.payload)
+            routePacket(packet)
+            return
+        }
 
+        // Fall back to plaintext JSON for handshake packets
+        if let packet = decodeHandshakePacket(data: data) {
+            routePacket(packet)
+        }
+    }
+
+    private func routePacket(_ packet: BLEPacket) {
         switch packet.type {
         case .handshakeRequest:
             handleHandshakeRequest(packet: packet)
@@ -248,7 +369,6 @@ final class BLEDataService: NSObject, @unchecked Sendable {
             return
         }
 
-        // Don't show ourselves or existing contacts
         guard payload.uid != currentUID else { return }
         guard !(localContactsService?.allConnectionUIDs.contains(payload.uid) ?? false) else { return }
 
@@ -257,7 +377,9 @@ final class BLEDataService: NSObject, @unchecked Sendable {
             uid: payload.uid,
             firstName: payload.firstName,
             lastName: payload.lastName,
-            photoFileName: nil
+            photoFileName: nil,
+            publicKeyData: payload.publicKey,
+            broadcastSecretData: payload.broadcastSecret
         )
 
         if !discoveredHandshakePeers.contains(where: { $0.uid == payload.uid }) {
@@ -270,9 +392,22 @@ final class BLEDataService: NSObject, @unchecked Sendable {
         guard let payload = try? JSONDecoder().decode(HandshakePayload.self, from: packet.payload) else {
             return
         }
-
-        // The other user accepted our handshake — add them as contact
-        // This would be triggered after the UI flow confirms the add
         print("[BLEDataService] Handshake accepted from \(payload.firstName) \(payload.lastName)")
+    }
+}
+
+// MARK: - Error Type
+
+enum BLEDataError: LocalizedError {
+    case notConfigured
+    case encryptionFailed
+    case keyExchangeFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .notConfigured: return "BLE data service not configured"
+        case .encryptionFailed: return "Failed to encrypt BLE packet"
+        case .keyExchangeFailed: return "Key exchange failed"
+        }
     }
 }

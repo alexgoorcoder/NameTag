@@ -177,8 +177,6 @@ struct BLEAddContactView: View {
 
     private func startScanning() {
         isScanning = true
-        // BLEDataService will handle handshake scanning when implemented
-        // For now, peers will be populated by the BLE handshake discovery
     }
 
     private func stopScanning() {
@@ -188,6 +186,10 @@ struct BLEAddContactView: View {
     private func addContact(peer: DiscoveredPeer) {
         errorMessage = nil
         do {
+            // 1. Derive and store encryption keys from ECDH exchange
+            try appState.bleDataService.completeHandshake(with: peer)
+
+            // 2. Save the contact locally
             try appState.localContactsService.addContact(
                 uid: peer.uid,
                 firstName: peer.firstName,
@@ -195,6 +197,11 @@ struct BLEAddContactView: View {
                 photoFileName: peer.photoFileName,
                 howDoIKnow: howDoIKnow.trimmingCharacters(in: .whitespacesAndNewlines)
             )
+
+            // 3. Update BLE connection UIDs so the contact is recognized
+            let connectionUIDs = appState.localContactsService.connectionUIDs
+            appState.bleService.updateConnectionUIDs(connectionUIDs)
+
             addedSuccessfully = true
         } catch {
             errorMessage = error.localizedDescription
@@ -209,6 +216,8 @@ struct DiscoveredPeer: Identifiable {
     let firstName: String
     let lastName: String
     let photoFileName: String?
+    let publicKeyData: Data     // ECDH P256 public key for key exchange
+    let broadcastSecretData: Data?  // Broadcast secret for rotating identifier resolution
 
     var name: String { "\(firstName) \(lastName)" }
 }

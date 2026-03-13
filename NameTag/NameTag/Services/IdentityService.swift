@@ -1,67 +1,88 @@
 import Foundation
+import CryptoKit
 import Security
 
 @Observable
 final class IdentityService {
     private(set) var currentUID: String
-    private static let keychainKey = "com.nametag.userUID"
-    private static let onboardedKey = "isOnboarded"
+    private(set) var identityKeyPair: P256.KeyAgreement.PrivateKey
+    private(set) var broadcastSecret: Data
+
+    private let keychainService: KeychainService
+
+    private static let uidKeychainKey = "identity.uid"
+    private static let keyPairKeychainKey = "identity.keyPair"
+    private static let broadcastSecretKeychainKey = "identity.broadcastSecret"
+    private static let onboardedKeychainKey = "identity.onboarded"
 
     var isOnboarded: Bool {
-        get { UserDefaults.standard.bool(forKey: Self.onboardedKey) }
-        set { UserDefaults.standard.set(newValue, forKey: Self.onboardedKey) }
+        get { keychainService.load(key: Self.onboardedKeychainKey) != nil }
+        set {
+            if newValue {
+                try? keychainService.save(key: Self.onboardedKeychainKey, data: Data([1]))
+            } else {
+                keychainService.delete(key: Self.onboardedKeychainKey)
+            }
+        }
     }
 
-    init() {
-        if let existing = Self.loadFromKeychain() {
-            currentUID = existing
+    /// X9.63 representation of the public key for BLE exchange.
+    var publicKeyData: Data {
+        CryptoService.serializePublicKey(identityKeyPair.publicKey)
+    }
+
+    init(keychainService: KeychainService = KeychainService()) {
+        self.keychainService = keychainService
+
+        // Load or generate UID
+        if let uidData = keychainService.load(key: Self.uidKeychainKey),
+           let uid = String(data: uidData, encoding: .utf8) {
+            currentUID = uid
         } else {
             let uid = UUID().uuidString
-            Self.saveToKeychain(uid)
+            try? keychainService.save(key: Self.uidKeychainKey, data: Data(uid.utf8))
             currentUID = uid
+        }
+
+        // Load or generate identity key pair
+        if let keyData = keychainService.load(key: Self.keyPairKeychainKey),
+           let key = try? CryptoService.deserializePrivateKey(keyData) {
+            identityKeyPair = key
+        } else {
+            let key = CryptoService.generateIdentityKeyPair()
+            try? keychainService.save(key: Self.keyPairKeychainKey,
+                                       data: CryptoService.serializePrivateKey(key))
+            identityKeyPair = key
+        }
+
+        // Load or generate broadcast secret
+        if let secret = keychainService.load(key: Self.broadcastSecretKeychainKey),
+           secret.count == 32 {
+            broadcastSecret = secret
+        } else {
+            let secret = CryptoService.generateBroadcastSecret()
+            try? keychainService.save(key: Self.broadcastSecretKeychainKey, data: secret)
+            broadcastSecret = secret
         }
     }
 
     func resetIdentity() {
-        Self.deleteFromKeychain()
+        keychainService.delete(key: Self.uidKeychainKey)
+        keychainService.delete(key: Self.keyPairKeychainKey)
+        keychainService.delete(key: Self.broadcastSecretKeychainKey)
+        keychainService.delete(key: Self.onboardedKeychainKey)
+
         let newUID = UUID().uuidString
-        Self.saveToKeychain(newUID)
+        try? keychainService.save(key: Self.uidKeychainKey, data: Data(newUID.utf8))
         currentUID = newUID
-        isOnboarded = false
-    }
 
-    // MARK: - Keychain
+        let newKey = CryptoService.generateIdentityKeyPair()
+        try? keychainService.save(key: Self.keyPairKeychainKey,
+                                   data: CryptoService.serializePrivateKey(newKey))
+        identityKeyPair = newKey
 
-    private static func saveToKeychain(_ value: String) {
-        let data = Data(value.utf8)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: keychainKey,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
-        ]
-        SecItemDelete(query as CFDictionary)
-        SecItemAdd(query as CFDictionary, nil)
-    }
-
-    private static func loadFromKeychain() -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: keychainKey,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    private static func deleteFromKeychain() {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: keychainKey
-        ]
-        SecItemDelete(query as CFDictionary)
+        let newSecret = CryptoService.generateBroadcastSecret()
+        try? keychainService.save(key: Self.broadcastSecretKeychainKey, data: newSecret)
+        broadcastSecret = newSecret
     }
 }

@@ -16,13 +16,12 @@ enum BLE {
     static let centralRestoreIdentifier = "com.nametag.central"
     static let peripheralRestoreIdentifier = "com.nametag.peripheral"
 
-    // UserDefaults keys for persisting BLE config across app relaunches
-    static let userDefaultsUserIDKey = "ble_userID"
-    static let userDefaultsConnectionUIDsKey = "ble_connectionUIDs"
-
     // BLE transfer limits
     static let maxGATTPayload = 512
     static let photoChunkSize = 480
+
+    // Rotating identifier window (seconds)
+    static let rotationWindowSeconds = 900
 }
 
 enum Proximity {

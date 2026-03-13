@@ -1,9 +1,11 @@
 import Foundation
 import UIKit
+import CryptoKit
 
 @Observable
 final class PhotoStorageService {
     let photosDirectory: URL
+    private var deviceKey: SymmetricKey?
 
     init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -11,15 +13,28 @@ final class PhotoStorageService {
         try? FileManager.default.createDirectory(at: photosDirectory, withIntermediateDirectories: true)
     }
 
-    /// Save a profile photo locally, returns the filename
+    /// Set the device encryption key for encrypting photos at rest
+    func configureEncryption(deviceKey: SymmetricKey) {
+        self.deviceKey = deviceKey
+    }
+
+    /// Save a profile photo locally with a random filename, encrypted at rest
     func savePhoto(uid: String, image: UIImage) throws -> String {
         let resized = resizeImage(image, maxDimension: 500)
         guard let data = resized.jpegData(compressionQuality: 0.7) else {
             throw PhotoStorageError.compressionFailed
         }
-        let filename = "\(uid).jpg"
+
+        // Use random filename to prevent UID-based tracking
+        let filename = "\(UUID().uuidString).enc"
         let url = photosDirectory.appendingPathComponent(filename)
-        try data.write(to: url)
+
+        if let key = deviceKey {
+            let encrypted = try CryptoService.encrypt(data: data, key: key)
+            try encrypted.write(to: url)
+        } else {
+            try data.write(to: url)
+        }
         return filename
     }
 
@@ -29,24 +44,37 @@ final class PhotoStorageService {
         return tiny.jpegData(compressionQuality: 0.3)
     }
 
-    /// Save photo received via BLE from a contact
+    /// Save photo received via BLE from a contact, encrypted at rest
     func saveReceivedPhoto(uid: String, data: Data) throws -> String {
-        let filename = "\(uid).jpg"
+        let filename = "\(UUID().uuidString).enc"
         let url = photosDirectory.appendingPathComponent(filename)
-        try data.write(to: url)
+
+        if let key = deviceKey {
+            let encrypted = try CryptoService.encrypt(data: data, key: key)
+            try encrypted.write(to: url)
+        } else {
+            try data.write(to: url)
+        }
         return filename
     }
 
-    /// Get the file URL for a photo filename
     func photoURL(for filename: String) -> URL {
         photosDirectory.appendingPathComponent(filename)
     }
 
-    /// Load UIImage from filename
+    /// Load UIImage from filename, decrypting if needed
     func loadImage(filename: String) -> UIImage? {
         let url = photosDirectory.appendingPathComponent(filename)
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return UIImage(data: data)
+        guard let fileData = try? Data(contentsOf: url) else { return nil }
+
+        // Try decryption first for .enc files
+        if filename.hasSuffix(".enc"), let key = deviceKey,
+           let decrypted = try? CryptoService.decrypt(data: fileData, key: key) {
+            return UIImage(data: decrypted)
+        }
+
+        // Fall back to unencrypted (legacy files)
+        return UIImage(data: fileData)
     }
 
     /// Load compressed photo data for BLE transfer

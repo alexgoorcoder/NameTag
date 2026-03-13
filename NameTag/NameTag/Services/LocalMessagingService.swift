@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import CryptoKit
 
 @Observable
 final class LocalMessagingService {
@@ -8,6 +9,7 @@ final class LocalMessagingService {
     private(set) var currentMessages: [Message] = []
     private var currentConversationID: String?
     private var currentUID: String
+    private var deviceKey: SymmetricKey?
 
     var unreadCount: Int {
         conversations.filter { $0.isUnread(currentUID: currentUID) }.count
@@ -19,6 +21,16 @@ final class LocalMessagingService {
         loadConversations()
     }
 
+    /// Set the device encryption key for encrypting message text at rest
+    func configureEncryption(deviceKey: SymmetricKey) {
+        self.deviceKey = deviceKey
+        // Reload to decrypt existing messages
+        loadConversations()
+        if let currentConversationID {
+            loadMessages(conversationID: currentConversationID)
+        }
+    }
+
     func loadConversations() {
         let descriptor = FetchDescriptor<LocalConversation>(
             sortBy: [SortDescriptor(\.lastMessageTimestamp, order: .reverse)]
@@ -27,7 +39,7 @@ final class LocalMessagingService {
         conversations = localConvos.map { lc in
             Conversation(id: lc.conversationID, otherUID: lc.otherUID,
                         otherName: lc.otherName, otherPhotoFileName: lc.otherPhotoFileName,
-                        lastMessageText: lc.lastMessageText,
+                        lastMessageText: decryptText(lc.lastMessageText),
                         lastMessageSenderUID: lc.lastMessageSenderUID,
                         lastMessageTimestamp: lc.lastMessageTimestamp,
                         lastReadAt: lc.lastReadAt)
@@ -42,7 +54,7 @@ final class LocalMessagingService {
         )
         let localMsgs = (try? modelContext.fetch(descriptor)) ?? []
         currentMessages = localMsgs.map { lm in
-            Message(id: lm.messageID, senderUID: lm.senderUID, text: lm.text,
+            Message(id: lm.messageID, senderUID: lm.senderUID, text: decryptText(lm.text),
                     sentAt: lm.sentAt, isDelivered: lm.isDelivered)
         }
     }
@@ -58,6 +70,7 @@ final class LocalMessagingService {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
+        let encryptedText = encryptText(trimmed)
         let conversationID = Conversation.conversationID(uid1: currentUID, uid2: recipientUID)
 
         // Create or update conversation
@@ -65,20 +78,20 @@ final class LocalMessagingService {
             predicate: #Predicate { $0.conversationID == conversationID }
         )
         if let convo = try? modelContext.fetch(convDescriptor).first {
-            convo.lastMessageText = trimmed
+            convo.lastMessageText = encryptedText
             convo.lastMessageSenderUID = currentUID
             convo.lastMessageTimestamp = Date()
         } else {
             let convo = LocalConversation(
                 conversationID: conversationID, otherUID: recipientUID,
                 otherName: recipientName, otherPhotoFileName: recipientPhotoFileName,
-                lastMessageText: trimmed, lastMessageSenderUID: currentUID
+                lastMessageText: encryptedText, lastMessageSenderUID: currentUID
             )
             modelContext.insert(convo)
         }
 
         // Create the message
-        let msg = LocalMessage(conversationID: conversationID, senderUID: currentUID, text: trimmed)
+        let msg = LocalMessage(conversationID: conversationID, senderUID: currentUID, text: encryptedText)
         modelContext.insert(msg)
         try modelContext.save()
 
@@ -101,12 +114,14 @@ final class LocalMessagingService {
             return // Already received
         }
 
+        let encryptedText = encryptText(text)
+
         // Create or update conversation
         let convDescriptor = FetchDescriptor<LocalConversation>(
             predicate: #Predicate { $0.conversationID == conversationID }
         )
         if let convo = try? modelContext.fetch(convDescriptor).first {
-            convo.lastMessageText = text
+            convo.lastMessageText = encryptedText
             convo.lastMessageSenderUID = senderUID
             convo.lastMessageTimestamp = sentAt
             convo.otherName = senderName
@@ -117,7 +132,7 @@ final class LocalMessagingService {
             let convo = LocalConversation(
                 conversationID: conversationID, otherUID: senderUID,
                 otherName: senderName, otherPhotoFileName: senderPhotoFileName,
-                lastMessageText: text, lastMessageSenderUID: senderUID,
+                lastMessageText: encryptedText, lastMessageSenderUID: senderUID,
                 lastMessageTimestamp: sentAt
             )
             modelContext.insert(convo)
@@ -125,7 +140,7 @@ final class LocalMessagingService {
 
         // Create the message (already delivered since we received it)
         let msg = LocalMessage(messageID: messageID, conversationID: conversationID,
-                               senderUID: senderUID, text: text, sentAt: sentAt, isDelivered: true)
+                               senderUID: senderUID, text: encryptedText, sentAt: sentAt, isDelivered: true)
         modelContext.insert(msg)
         try modelContext.save()
 
@@ -143,6 +158,11 @@ final class LocalMessagingService {
             sortBy: [SortDescriptor(\.sentAt)]
         )
         return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    /// Get the plaintext of a pending message for BLE transmission
+    func plaintextForPendingMessage(_ message: LocalMessage) -> String {
+        decryptText(message.text)
     }
 
     /// Mark messages as delivered (after BLE confirms receipt)
@@ -173,7 +193,6 @@ final class LocalMessagingService {
     func deleteConversation(otherUID: String) throws {
         let conversationID = Conversation.conversationID(uid1: currentUID, uid2: otherUID)
 
-        // Delete all messages
         let msgDescriptor = FetchDescriptor<LocalMessage>(
             predicate: #Predicate { $0.conversationID == conversationID }
         )
@@ -181,7 +200,6 @@ final class LocalMessagingService {
             for msg in messages { modelContext.delete(msg) }
         }
 
-        // Delete conversation
         let convDescriptor = FetchDescriptor<LocalConversation>(
             predicate: #Predicate { $0.conversationID == conversationID }
         )
@@ -205,5 +223,29 @@ final class LocalMessagingService {
         try modelContext.save()
         conversations = []
         currentMessages = []
+    }
+
+    // MARK: - Encryption Helpers
+
+    /// Encrypt text for storage. Returns base64-encoded ciphertext, or plaintext if no key set.
+    private func encryptText(_ plaintext: String) -> String {
+        guard let key = deviceKey else { return plaintext }
+        guard let data = plaintext.data(using: .utf8),
+              let encrypted = try? CryptoService.encrypt(data: data, key: key) else {
+            return plaintext
+        }
+        return "enc:" + encrypted.base64EncodedString()
+    }
+
+    /// Decrypt stored text. Handles both encrypted ("enc:...") and legacy plaintext.
+    private func decryptText(_ stored: String) -> String {
+        guard stored.hasPrefix("enc:"), let key = deviceKey else { return stored }
+        let base64 = String(stored.dropFirst(4))
+        guard let data = Data(base64Encoded: base64),
+              let decrypted = try? CryptoService.decrypt(data: data, key: key),
+              let text = String(data: decrypted, encoding: .utf8) else {
+            return "[encrypted]"
+        }
+        return text
     }
 }

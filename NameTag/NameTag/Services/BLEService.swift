@@ -15,15 +15,20 @@ final class BLEService: NSObject, ProximityService, @unchecked Sendable {
     private var knownConnectionUIDs: Set<String> = []
     private var staleTimer: Timer?
 
+    // Crypto dependencies for rotating identifiers
+    private var broadcastSecret: Data = Data()
+    private var contactKeyStore: ContactKeyStore?
+    private var keychainService: KeychainService?
+
+    // Cached rotating identifier (refreshed each window)
+    private var currentRotatingIdentifier: Data = Data()
+    private var lastIdentifierWindow: Int = 0
+
     /// Called when a new contact is discovered (for centralized notification handling)
     var onContactDiscovered: ((String) -> Void)?
 
-    /// Tracks when we last fired onContactDiscovered for each UID, so we can
-    /// periodically re-fire for continuously-present contacts (allows the
-    /// gatekeeper to re-evaluate expired suppressions).
+    /// Tracks when we last fired onContactDiscovered for each UID
     private var lastCallbackAt: [String: Date] = [:]
-
-    /// How often to re-fire the callback for a continuously-present contact
     private let callbackRecheckInterval: TimeInterval = 60
 
     // Track peripherals we're connecting to so we can read their characteristic
@@ -32,13 +37,24 @@ final class BLEService: NSObject, ProximityService, @unchecked Sendable {
     // All UIDs read from peripherals, even if not in knownConnectionUIDs yet
     private var discoveredUIDs: Set<String> = []
 
+    // Keychain keys for persisting BLE config
+    private static let keychainUserIDKey = "ble.userID"
+    private static let keychainConnectionUIDsKey = "ble.connectionUIDs"
+
     override init() {
         super.init()
 
-        // Load persisted config so BLE can resume immediately after state restoration
-        userID = UserDefaults.standard.string(forKey: BLE.userDefaultsUserIDKey) ?? ""
-        if let saved = UserDefaults.standard.array(forKey: BLE.userDefaultsConnectionUIDsKey) as? [String] {
-            knownConnectionUIDs = Set(saved)
+        let kc = KeychainService()
+        keychainService = kc
+
+        // Load persisted config from Keychain
+        if let uidData = kc.load(key: Self.keychainUserIDKey),
+           let uid = String(data: uidData, encoding: .utf8) {
+            userID = uid
+        }
+        if let uidsData = kc.load(key: Self.keychainConnectionUIDsKey),
+           let uids = try? JSONDecoder().decode(Set<String>.self, from: uidsData) {
+            knownConnectionUIDs = uids
         }
 
         // Initialize managers WITH restore identifiers for state preservation
@@ -60,12 +76,18 @@ final class BLEService: NSObject, ProximityService, @unchecked Sendable {
         persistConfig()
     }
 
+    /// Set crypto dependencies for rotating identifiers
+    func configureCrypto(broadcastSecret: Data, contactKeyStore: ContactKeyStore) {
+        self.broadcastSecret = broadcastSecret
+        self.contactKeyStore = contactKeyStore
+        refreshRotatingIdentifier()
+    }
+
     func updateConnectionUIDs(_ uids: Set<String>) {
         let previousUIDs = knownConnectionUIDs
         knownConnectionUIDs = uids
         persistConfig()
 
-        // Re-evaluate any UIDs that were read before connection UIDs loaded
         let newUIDs = uids.subtracting(previousUIDs)
         for uid in discoveredUIDs.intersection(newUIDs) {
             handleDiscoveredUID(uid)
@@ -74,6 +96,8 @@ final class BLEService: NSObject, ProximityService, @unchecked Sendable {
 
     func startAdvertising() {
         guard peripheralManager.state == .poweredOn else { return }
+
+        refreshRotatingIdentifier()
 
         let characteristic = CBMutableCharacteristic(
             type: BLE.characteristicUUID,
@@ -119,17 +143,54 @@ final class BLEService: NSObject, ProximityService, @unchecked Sendable {
         discoveredPeripherals.removeAll()
     }
 
-    /// Clear persisted BLE config (call on sign-out)
     func clearPersistedConfig() {
-        UserDefaults.standard.removeObject(forKey: BLE.userDefaultsUserIDKey)
-        UserDefaults.standard.removeObject(forKey: BLE.userDefaultsConnectionUIDsKey)
+        keychainService?.delete(key: Self.keychainUserIDKey)
+        keychainService?.delete(key: Self.keychainConnectionUIDsKey)
+    }
+
+    // MARK: - Rotating Identifier
+
+    private func refreshRotatingIdentifier() {
+        guard !broadcastSecret.isEmpty, !userID.isEmpty else { return }
+        let window = CryptoService.currentWindow()
+        guard window != lastIdentifierWindow else { return }
+        lastIdentifierWindow = window
+        currentRotatingIdentifier = CryptoService.generateBroadcastIdentifier(
+            secret: broadcastSecret, uid: userID, window: window
+        )
+    }
+
+    /// Resolve a received rotating identifier to a contact UID.
+    /// Checks both the current window and previous window to handle boundary crossings.
+    func resolveRotatingIdentifier(_ identifier: Data) -> String? {
+        guard let keyStore = contactKeyStore else { return nil }
+        let secrets = keyStore.allBroadcastSecrets()
+        let currentWindow = CryptoService.currentWindow()
+
+        for (uid, secret) in secrets {
+            // Check current window
+            let expected = CryptoService.generateBroadcastIdentifier(
+                secret: secret, uid: uid, window: currentWindow
+            )
+            if expected == identifier { return uid }
+
+            // Check previous window (handles boundary crossing)
+            let prevExpected = CryptoService.generateBroadcastIdentifier(
+                secret: secret, uid: uid, window: currentWindow - 1
+            )
+            if prevExpected == identifier { return uid }
+        }
+        return nil
     }
 
     // MARK: - Private Helpers
 
     private func persistConfig() {
-        UserDefaults.standard.set(userID, forKey: BLE.userDefaultsUserIDKey)
-        UserDefaults.standard.set(Array(knownConnectionUIDs), forKey: BLE.userDefaultsConnectionUIDsKey)
+        guard let kc = keychainService else { return }
+        try? kc.save(key: Self.keychainUserIDKey, data: Data(userID.utf8))
+        if let data = try? JSONEncoder().encode(knownConnectionUIDs) {
+            try? kc.save(key: Self.keychainConnectionUIDsKey, data: data)
+        }
     }
 
     private func startStaleTimer() {
@@ -154,14 +215,11 @@ final class BLEService: NSObject, ProximityService, @unchecked Sendable {
         var shouldNotify: Bool
 
         if let existing = nearbyUserIDs[uid] {
-            // Treat as "new" if they haven't been seen for longer than the stale timeout.
             shouldNotify = now.timeIntervalSince(existing.lastSeen) > BLE.staleTimeout
         } else {
             shouldNotify = true
         }
 
-        // Also re-fire periodically for continuously-present contacts so the
-        // gatekeeper can re-evaluate after a suppression window expires.
         if !shouldNotify, let lastCB = lastCallbackAt[uid],
            now.timeIntervalSince(lastCB) > callbackRecheckInterval {
             shouldNotify = true
@@ -187,26 +245,21 @@ extension BLEService: CBCentralManagerDelegate {
         }
     }
 
-    /// Called when iOS relaunches the app and restores the central manager state
     nonisolated func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         MainActor.assumeIsolated {
             print("[BLE] Central manager restoring state")
-
-            // Re-track any peripherals that were being connected to when the app was killed
             if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
                 for peripheral in peripherals {
                     print("[BLE] Restoring peripheral: \(peripheral.identifier)")
                     discoveredPeripherals[peripheral.identifier] = peripheral
                     peripheral.delegate = self
 
-                    // Resume the connection flow based on the peripheral's current state
                     switch peripheral.state {
                     case .connected:
                         peripheral.discoverServices([BLE.serviceUUID])
                     case .connecting:
-                        break // already connecting, wait for didConnect
+                        break
                     default:
-                        // Try to reconnect
                         central.connect(peripheral, options: nil)
                     }
                 }
@@ -221,9 +274,7 @@ extension BLEService: CBCentralManagerDelegate {
         rssi RSSI: NSNumber
     ) {
         MainActor.assumeIsolated {
-            // If we're already connected to this peripheral, skip
             guard discoveredPeripherals[peripheral.identifier] == nil else { return }
-
             discoveredPeripherals[peripheral.identifier] = peripheral
             peripheral.delegate = self
             central.connect(peripheral, options: nil)
@@ -275,10 +326,18 @@ extension BLEService: CBPeripheralDelegate {
         MainActor.assumeIsolated {
             defer { centralManager.cancelPeripheralConnection(peripheral) }
 
-            guard let data = characteristic.value,
-                  let uid = String(data: data, encoding: .utf8) else { return }
+            guard let data = characteristic.value else { return }
 
-            handleDiscoveredUID(uid)
+            // Try to resolve as a rotating identifier first
+            if data.count == 16, let resolvedUID = resolveRotatingIdentifier(data) {
+                handleDiscoveredUID(resolvedUID)
+                return
+            }
+
+            // Fall back to plaintext UID for backward compatibility during migration
+            if let uid = String(data: data, encoding: .utf8), !uid.isEmpty {
+                handleDiscoveredUID(uid)
+            }
         }
     }
 }
@@ -293,23 +352,18 @@ extension BLEService: CBPeripheralManagerDelegate {
         }
     }
 
-    /// Called when iOS relaunches the app and restores the peripheral manager state
     nonisolated func peripheralManager(_ peripheral: CBPeripheralManager, willRestoreState dict: [String: Any]) {
         MainActor.assumeIsolated {
             print("[BLE] Peripheral manager restoring state")
-
-            // Check if our service is still registered; if not, re-add it
             if let services = dict[CBPeripheralManagerRestoredStateServicesKey] as? [CBMutableService] {
                 let hasOurService = services.contains { $0.uuid == BLE.serviceUUID }
                 if !hasOurService && !userID.isEmpty {
                     startAdvertising()
                 }
             } else if !userID.isEmpty {
-                // No services restored — re-add
                 startAdvertising()
             }
 
-            // Re-start advertising if it was active
             if let advertising = dict[CBPeripheralManagerRestoredStateAdvertisementDataKey] as? [String: Any],
                !advertising.isEmpty {
                 isAdvertising = true
@@ -335,10 +389,11 @@ extension BLEService: CBPeripheralManagerDelegate {
                 return
             }
 
-            guard let data = userID.data(using: .utf8) else {
-                peripheral.respond(to: request, withResult: .unlikelyError)
-                return
-            }
+            // Respond with rotating identifier instead of plaintext UID
+            refreshRotatingIdentifier()
+            let data = currentRotatingIdentifier.isEmpty
+                ? Data(userID.utf8)  // Fallback if crypto not configured yet
+                : currentRotatingIdentifier
 
             if request.offset > data.count {
                 peripheral.respond(to: request, withResult: .invalidOffset)
