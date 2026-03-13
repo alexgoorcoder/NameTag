@@ -10,124 +10,27 @@ struct ProfileView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
-                if let user = appState.userService.currentAppUser {
+                if let profile = appState.localUserService.currentProfile {
                     Spacer()
 
                     if viewModel.isEditing {
-                        editingContent(user: user)
+                        editingContent(profile: profile)
                     } else {
-                        displayContent(user: user)
+                        displayContent(profile: profile)
                     }
 
                     Spacer()
 
                     if !viewModel.isEditing {
                         VStack(spacing: 12) {
-                            // Admin Dashboard link (only for admins)
-                            if appState.isAdmin {
-                                NavigationLink {
-                                    AdminDashboardView()
-                                } label: {
-                                    Label("Admin Dashboard", systemImage: "shield.checkered")
-                                        .frame(maxWidth: .infinity)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(.indigo)
-                                .controlSize(.large)
-                                .padding(.horizontal)
-                            }
-
-                            // Per-field invitation toggles
-                            VStack(spacing: 8) {
-                                Text("Invitation preferences")
-                                    .font(.subheadline)
-                                    .fontWeight(.medium)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                                if let email = user.email {
-                                    HStack {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text("Email")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                            Text(email)
-                                                .font(.subheadline)
-                                        }
-                                        Spacer()
-                                        Toggle("", isOn: Binding(
-                                            get: { viewModel.emailSearchable },
-                                            set: { newValue in
-                                                viewModel.emailSearchable = newValue
-                                                Task { await viewModel.updateSearchablePreference(field: "email", using: appState) }
-                                            }
-                                        ))
-                                        .labelsHidden()
-                                    }
-                                    .padding(12)
-                                    .background(.quaternary)
-                                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                                }
-
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Phone")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                        Text(user.phone ?? "Not set")
-                                            .font(.subheadline)
-                                            .foregroundStyle(user.phone != nil ? .primary : .tertiary)
-                                    }
-                                    Spacer()
-                                    Toggle("", isOn: Binding(
-                                        get: { viewModel.phoneSearchable },
-                                        set: { newValue in
-                                            viewModel.phoneSearchable = newValue
-                                            Task { await viewModel.updateSearchablePreference(field: "phone", using: appState) }
-                                        }
-                                    ))
-                                    .labelsHidden()
-                                }
-                                .padding(12)
-                                .background(.quaternary)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-
-                                Text("Toggle on to let others find and invite you by that method")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(.horizontal)
-
                             Button(role: .destructive) {
-                                appState.onSignOut()
+                                viewModel.showingResetConfirmation = true
                             } label: {
-                                Text("Sign Out")
+                                Text("Reset Account")
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.large)
-
-                            Button(role: .destructive) {
-                                viewModel.showingDeleteConfirmation = true
-                            } label: {
-                                if viewModel.isDeleting {
-                                    ProgressView()
-                                        .frame(maxWidth: .infinity)
-                                } else {
-                                    Text("Delete Account")
-                                        .frame(maxWidth: .infinity)
-                                }
-                            }
-                            .buttonStyle(.borderless)
-                            .controlSize(.large)
-                            .foregroundStyle(.red)
-                            .disabled(viewModel.isDeleting)
-
-                            if let error = viewModel.deleteError {
-                                Text(error)
-                                    .font(.footnote)
-                                    .foregroundStyle(.red)
-                                    .multilineTextAlignment(.center)
-                            }
                         }
                         .padding(.horizontal)
                         .padding(.bottom, 32)
@@ -137,20 +40,18 @@ struct ProfileView: View {
                 }
             }
             .navigationTitle("Profile")
-            .onAppear { viewModel.loadUser(from: appState) }
-            .alert("Delete Account", isPresented: $viewModel.showingDeleteConfirmation) {
-                Button("Delete", role: .destructive) {
-                    Task {
-                        await viewModel.deleteAccount(using: appState)
-                    }
+            .onAppear { viewModel.loadProfile(from: appState) }
+            .alert("Reset Account", isPresented: $viewModel.showingResetConfirmation) {
+                Button("Reset", role: .destructive) {
+                    appState.resetAccount()
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This will permanently delete your account and all your data. This cannot be undone.")
+                Text("This will delete all your data, contacts, and messages. You will need to set up your profile again and re-add contacts. This cannot be undone.")
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    if appState.userService.currentAppUser != nil {
+                    if appState.localUserService.currentProfile != nil {
                         if viewModel.isEditing {
                             Button("Cancel") {
                                 viewModel.cancelEditing()
@@ -169,34 +70,15 @@ struct ProfileView: View {
     // MARK: - Display Mode
 
     @ViewBuilder
-    private func displayContent(user: AppUser) -> some View {
-        AsyncProfileImage(url: user.profilePhotoURL)
+    private func displayContent(profile: LocalProfile) -> some View {
+        AsyncProfileImage(photoFileName: profile.photoFileName)
             .frame(width: 120, height: 120)
             .clipShape(Circle())
             .overlay(Circle().stroke(.separator, lineWidth: 1))
 
         VStack(spacing: 4) {
-            Text(user.fullName)
+            Text(profile.fullName)
                 .font(.title2.bold())
-
-            if let email = user.email {
-                Text(email)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-
-            if let lat = appState.locationService.currentLatitude,
-               let lon = appState.locationService.currentLongitude {
-                HStack(spacing: 4) {
-                    Image(systemName: "location.fill")
-                        .font(.caption2)
-                    Text(String(format: "%.4f, %.4f", lat, lon))
-                        .font(.caption)
-                        .monospacedDigit()
-                }
-                .foregroundStyle(.secondary)
-                .padding(.top, 2)
-            }
         }
 
         if let message = viewModel.successMessage {
@@ -210,9 +92,9 @@ struct ProfileView: View {
     // MARK: - Editing Mode
 
     @ViewBuilder
-    private func editingContent(user: AppUser) -> some View {
+    private func editingContent(profile: LocalProfile) -> some View {
         // Tappable profile photo with camera badge
-        profilePhotoEditor(currentURL: user.profilePhotoURL)
+        profilePhotoEditor(currentPhotoFileName: profile.photoFileName)
 
         // Name fields
         VStack(spacing: 12) {
@@ -239,28 +121,21 @@ struct ProfileView: View {
 
         // Save button
         Button {
-            Task {
-                await viewModel.save(using: appState)
-            }
+            viewModel.save(using: appState)
         } label: {
-            if viewModel.isLoading {
-                ProgressView()
-                    .frame(maxWidth: .infinity)
-            } else {
-                Text("Save Changes")
-                    .frame(maxWidth: .infinity)
-            }
+            Text("Save Changes")
+                .frame(maxWidth: .infinity)
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.large)
-        .disabled(!viewModel.hasChanges || !viewModel.isNameValid || viewModel.isLoading)
+        .disabled(!viewModel.hasChanges || !viewModel.isNameValid)
         .padding(.horizontal, 32)
     }
 
     // MARK: - Profile Photo Editor
 
     @ViewBuilder
-    private func profilePhotoEditor(currentURL: String?) -> some View {
+    private func profilePhotoEditor(currentPhotoFileName: String?) -> some View {
         VStack(spacing: 12) {
             // Single photo circle — shows new selection or current photo
             ZStack(alignment: .bottomTrailing) {
@@ -272,7 +147,7 @@ struct ProfileView: View {
                         .clipShape(Circle())
                         .overlay(Circle().stroke(.secondary, lineWidth: 2))
                 } else {
-                    AsyncProfileImage(url: currentURL)
+                    AsyncProfileImage(photoFileName: currentPhotoFileName)
                         .frame(width: 150, height: 150)
                         .clipShape(Circle())
                         .overlay(Circle().stroke(.secondary, lineWidth: 2))

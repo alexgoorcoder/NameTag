@@ -2,16 +2,15 @@ import SwiftUI
 
 struct MessagesListView: View {
     @Environment(AppState.self) private var appState
-    @State private var selectedConversation: Conversation?
 
     private var currentUID: String {
-        appState.authService.currentUID ?? ""
+        appState.identityService.currentUID
     }
 
     var body: some View {
         NavigationStack {
             Group {
-                if appState.messagingService.conversations.isEmpty {
+                if appState.localMessagingService.conversations.isEmpty {
                     ContentUnavailableView(
                         "No Messages Yet",
                         systemImage: "bubble.left.and.bubble.right",
@@ -19,7 +18,7 @@ struct MessagesListView: View {
                     )
                 } else {
                     List {
-                        ForEach(appState.messagingService.conversations) { conversation in
+                        ForEach(appState.localMessagingService.conversations) { conversation in
                             NavigationLink(value: conversation) {
                                 conversationRow(conversation: conversation)
                             }
@@ -45,12 +44,12 @@ struct MessagesListView: View {
                 .fill(unread ? Color.blue : Color.clear)
                 .frame(width: 10, height: 10)
 
-            AsyncProfileImage(url: conversation.otherPhotoURL(currentUID: currentUID))
+            AsyncProfileImage(photoFileName: conversation.otherPhotoFileName)
                 .frame(width: 48, height: 48)
                 .clipShape(Circle())
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(conversation.otherName(currentUID: currentUID))
+                Text(conversation.otherName)
                     .font(.body.weight(unread ? .bold : .semibold))
                     .lineLimit(1)
 

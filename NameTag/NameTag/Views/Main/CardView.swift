@@ -11,7 +11,7 @@ struct CardView: View {
         GeometryReader { geo in
             VStack(spacing: 0) {
                 // Profile photo — fills the space above the bottom bar
-                AsyncProfileImage(url: nearbyContact.connection.profilePhotoURL)
+                AsyncProfileImage(photoFileName: nearbyContact.connection.photoFileName)
                     .frame(width: geo.size.width, height: geo.size.height - bottomBarHeight)
                     .clipped()
 

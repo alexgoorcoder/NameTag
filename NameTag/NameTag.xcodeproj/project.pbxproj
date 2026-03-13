@@ -6,13 +6,6 @@
 	objectVersion = 77;
 	objects = {
 
-/* Begin PBXBuildFile section */
-		3F53D01F2F5A002F009E0C15 /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = 3F53D01E2F5A002F009E0C15 /* FirebaseMessaging */; };
-		AA000001FBAA000100000001 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = AA000002FBAA000200000001 /* FirebaseAuth */; };
-		AA000003FBAA000300000001 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = AA000004FBAA000400000001 /* FirebaseFirestore */; };
-		AA000005FBAA000500000001 /* FirebaseStorage in Frameworks */ = {isa = PBXBuildFile; productRef = AA000006FBAA000600000001 /* FirebaseStorage */; };
-/* End PBXBuildFile section */
-
 /* Begin PBXFileReference section */
 		3F2B9B8A2F3D5739002198E8 /* NameTag.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NameTag.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -30,10 +23,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				3F53D01F2F5A002F009E0C15 /* FirebaseMessaging in Frameworks */,
-				AA000001FBAA000100000001 /* FirebaseAuth in Frameworks */,
-				AA000003FBAA000300000001 /* FirebaseFirestore in Frameworks */,
-				AA000005FBAA000500000001 /* FirebaseStorage in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -44,7 +33,6 @@
 			isa = PBXGroup;
 			children = (
 				3F2B9B8C2F3D5739002198E8 /* NameTag */,
-				3F53D01D2F5A002F009E0C15 /* Frameworks */,
 				3F2B9B8B2F3D5739002198E8 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -55,13 +43,6 @@
 				3F2B9B8A2F3D5739002198E8 /* NameTag.app */,
 			);
 			name = Products;
-			sourceTree = "<group>";
-		};
-		3F53D01D2F5A002F009E0C15 /* Frameworks */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -84,10 +65,6 @@
 			);
 			name = NameTag;
 			packageProductDependencies = (
-				AA000002FBAA000200000001 /* FirebaseAuth */,
-				AA000004FBAA000400000001 /* FirebaseFirestore */,
-				AA000006FBAA000600000001 /* FirebaseStorage */,
-				3F53D01E2F5A002F009E0C15 /* FirebaseMessaging */,
 			);
 			productName = NameTag;
 			productReference = 3F2B9B8A2F3D5739002198E8 /* NameTag.app */;
@@ -118,7 +95,6 @@
 			mainGroup = 3F2B9B812F3D5739002198E8;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				AA000007FBAA000700000001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 3F2B9B8B2F3D5739002198E8 /* Products */;
@@ -284,12 +260,9 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = NameTagger;
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "NameTag uses Bluetooth to detect nearby contacts.";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "NameTag uses Bluetooth to detect nearby contacts and exchange messages.";
 				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "NameTag uses Bluetooth to let nearby contacts see you.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "NameTag needs camera access for your profile photo.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "NameTag uses your local network to discover nearby contacts.";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "NameTagger uses your location in the background to notify you when contacts are nearby, even when the app is closed.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "NameTagger uses your location to find nearby contacts.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "NameTag needs photo library access for your profile photo.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -300,7 +273,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = alex.NameTag;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -327,12 +300,9 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = NameTagger;
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "NameTag uses Bluetooth to detect nearby contacts.";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "NameTag uses Bluetooth to detect nearby contacts and exchange messages.";
 				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "NameTag uses Bluetooth to let nearby contacts see you.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "NameTag needs camera access for your profile photo.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "NameTag uses your local network to discover nearby contacts.";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "NameTagger uses your location in the background to notify you when contacts are nearby, even when the app is closed.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "NameTagger uses your location to find nearby contacts.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "NameTag needs photo library access for your profile photo.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -343,7 +313,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = alex.NameTag;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -378,40 +348,6 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-		AA000007FBAA000700000001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/firebase/firebase-ios-sdk.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 12.9.0;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		3F53D01E2F5A002F009E0C15 /* FirebaseMessaging */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA000007FBAA000700000001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseMessaging;
-		};
-		AA000002FBAA000200000001 /* FirebaseAuth */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA000007FBAA000700000001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseAuth;
-		};
-		AA000004FBAA000400000001 /* FirebaseFirestore */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA000007FBAA000700000001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseFirestore;
-		};
-		AA000006FBAA000600000001 /* FirebaseStorage */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AA000007FBAA000700000001 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseStorage;
-		};
-/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 3F2B9B822F3D5739002198E8 /* Project object */;
 }

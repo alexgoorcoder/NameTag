@@ -5,7 +5,7 @@ struct ConversationView: View {
     let conversationID: String
     let otherUserUID: String
     let otherUserName: String
-    let otherUserPhotoURL: String?
+    let otherUserPhotoFileName: String?
 
     @State private var messageText = ""
     @State private var isSending = false
@@ -15,22 +15,19 @@ struct ConversationView: View {
         self.conversationID = Conversation.conversationID(uid1: currentUID, uid2: connection.userId)
         self.otherUserUID = connection.userId
         self.otherUserName = connection.fullName
-        self.otherUserPhotoURL = connection.profilePhotoURL
+        self.otherUserPhotoFileName = connection.photoFileName
     }
 
     // Init from Conversation (inbox entry)
     init(conversation: Conversation, currentUID: String) {
-        self.conversationID = conversation.id ?? Conversation.conversationID(
-            uid1: conversation.participantUIDs[0],
-            uid2: conversation.participantUIDs[1]
-        )
-        self.otherUserUID = conversation.otherUID(currentUID: currentUID) ?? ""
-        self.otherUserName = conversation.otherName(currentUID: currentUID)
-        self.otherUserPhotoURL = conversation.otherPhotoURL(currentUID: currentUID)
+        self.conversationID = conversation.id
+        self.otherUserUID = conversation.otherUID
+        self.otherUserName = conversation.otherName
+        self.otherUserPhotoFileName = conversation.otherPhotoFileName
     }
 
     private var currentUID: String {
-        appState.authService.currentUID ?? ""
+        appState.identityService.currentUID
     }
 
     var body: some View {
@@ -39,7 +36,7 @@ struct ConversationView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 8) {
-                        ForEach(appState.messagingService.currentMessages) { message in
+                        ForEach(appState.localMessagingService.currentMessages) { message in
                             messageBubble(message: message)
                                 .id(message.id)
                         }
@@ -48,15 +45,12 @@ struct ConversationView: View {
                     .padding(.top, 12)
                     .padding(.bottom, 8)
                 }
-                .onChange(of: appState.messagingService.currentMessages.count) { _, _ in
+                .onChange(of: appState.localMessagingService.currentMessages.count) { _, _ in
                     scrollToBottom(proxy: proxy)
                     // Mark as read when new messages arrive while viewing
-                    Task {
-                        await appState.messagingService.markConversationRead(
-                            conversationID: conversationID,
-                            uid: currentUID
-                        )
-                    }
+                    try? appState.localMessagingService.markConversationRead(
+                        conversationID: conversationID
+                    )
                 }
                 .onAppear {
                     scrollToBottom(proxy: proxy)
@@ -71,16 +65,13 @@ struct ConversationView: View {
         .navigationTitle(otherUserName)
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            appState.messagingService.startListeningToMessages(conversationID: conversationID)
-            Task {
-                await appState.messagingService.markConversationRead(
-                    conversationID: conversationID,
-                    uid: currentUID
-                )
-            }
+            appState.localMessagingService.loadMessages(conversationID: conversationID)
+            try? appState.localMessagingService.markConversationRead(
+                conversationID: conversationID
+            )
         }
         .onDisappear {
-            appState.messagingService.stopListeningToMessages()
+            appState.localMessagingService.stopListeningToMessages()
         }
     }
 
@@ -101,10 +92,19 @@ struct ConversationView: View {
                     .foregroundStyle(isSent ? .white : .primary)
                     .clipShape(RoundedRectangle(cornerRadius: 18))
 
-                Text(message.sentAt, style: .time)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 4)
+                HStack(spacing: 4) {
+                    Text(message.sentAt, style: .time)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+
+                    // Delivery status for sent messages
+                    if isSent && !message.isDelivered {
+                        Image(systemName: "clock")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .padding(.horizontal, 4)
             }
 
             if !isSent { Spacer(minLength: 60) }
@@ -124,7 +124,7 @@ struct ConversationView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 20))
 
             Button {
-                Task { await sendMessage() }
+                sendMessage()
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 32))
@@ -138,23 +138,17 @@ struct ConversationView: View {
 
     // MARK: - Send Message
 
-    private func sendMessage() async {
-        guard let currentUser = appState.userService.currentAppUser,
-              let uid = appState.authService.currentUID else { return }
-
+    private func sendMessage() {
         let text = messageText
         messageText = ""
         isSending = true
 
         do {
-            try await appState.messagingService.sendMessage(
+            try appState.localMessagingService.sendMessage(
                 text: text,
-                from: uid,
                 to: otherUserUID,
-                senderName: currentUser.fullName,
-                senderPhotoURL: currentUser.profilePhotoURL,
                 recipientName: otherUserName,
-                recipientPhotoURL: otherUserPhotoURL
+                recipientPhotoFileName: otherUserPhotoFileName
             )
         } catch {
             // Restore the message text on failure so user can retry
@@ -168,7 +162,7 @@ struct ConversationView: View {
     // MARK: - Scroll
 
     private func scrollToBottom(proxy: ScrollViewProxy) {
-        guard let lastMessage = appState.messagingService.currentMessages.last else { return }
+        guard let lastMessage = appState.localMessagingService.currentMessages.last else { return }
         withAnimation(.easeOut(duration: 0.2)) {
             proxy.scrollTo(lastMessage.id, anchor: .bottom)
         }
